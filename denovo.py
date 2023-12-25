@@ -207,6 +207,7 @@ args = parser.parse_args()
 print('Loading model....')
 tf.keras.backend.clear_session()
 model = k.models.load_model(args.model, compile=0)
+print(model.summary())
 
 print("Starting reading mgf of:", args.input)
 input_stream = mgf.read(open(args.input, "r"), convert_arrays=1, read_charges=False,
