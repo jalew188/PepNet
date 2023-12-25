@@ -262,6 +262,6 @@ __pycache__/
 /CodeGraphData
 readme
 *.cluster
-*.ipynb
+# *.ipynb
 *.h5
 *.hdf5

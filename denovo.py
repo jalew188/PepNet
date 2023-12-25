@@ -1,8 +1,8 @@
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-import argparse
 import numpy as np
+import pandas as pd
 from pyteomics import mgf, mass
 from dataclasses import dataclass, asdict
 
@@ -12,9 +12,53 @@ from tensorflow_addons.layers import InstanceNormalization
 
 from utils import *
 
+class SpecDFStream:
+    def __init__(self, 
+        spec_df:pd.DataFrame, 
+        peak_df:pd.DataFrame
+    ):
+        self.spec_ptr = 0
+        self.spec_df = spec_df
+        self.peak_df = peak_df
 
-print(tf.__version__, tf.config.list_physical_devices('GPU'))
+    def __iter__(self):
+        # self.spec_ptr = 0
+        return self
+    
+    def __next__(self):
+        if self.spec_ptr >= len*self.spec_df:
+            raise StopIteration
+        ret_series = self.spec_df.iloc[self.spec_ptr]
+        start = ret_series["peak_start_idx"]
+        stop = ret_series["peak_stop_idx"]
+        self.spec_ptr += 1
+        peak_masses = self.peak_df.mz.values[start:stop]
+        peak_intens = self.peak_df.intensity.values[start:stop]
+        return ret_series, peak_masses, peak_intens
 
+def read_spec_df(
+    data:SpecDFStream, 
+):
+    spectra = []
+
+    for spec_series, peak_masses, peak_intens in data:
+        if 'sequence' in spec_series.index:
+            pep = spec_series.sequence
+        else:
+            pep = ''
+
+        spectra.append({
+            'pep': pep, 'type': 3, 'nmod': 0, 
+            'charge': spec_series.charge, 
+            'mod': np.zeros(len(pep), 'int32'),
+            'mass': spec_series.precursor_mz, 
+            'nce': spec_series.nce, 
+            'raw_name': spec_series.raw_name,
+            'spec_idx': spec_series.spec_idx, 
+            'mz': peak_masses, 'it': peak_intens
+        })
+
+    return spectra
 
 def read_mgf(data, count=-1, default_charge=-1):
     collision_const = {1: 1, 2: 0.9, 3: 0.85, 4: 0.8, 5: 0.75, 6: 0.75, 7: 0.75, 8: 0.75}
@@ -169,6 +213,8 @@ def denovo(model, spectra, batch_size):
     predict_peps = []
     scores = []
     positional_scores = []
+    raw_names = []
+    spec_idxes = []
     charges = [sp['charge'] for sp in spectra]
     peps = [sp['pep'] for sp in spectra]
 
@@ -176,6 +222,14 @@ def denovo(model, spectra, batch_size):
 
     for rst, sp in zip(predictions, spectra):
         ms, c = sp['mass'], sp['charge']
+        if 'raw_name' in sp:
+            raw_names.append(sp['raw_name'])
+        else:
+            raw_names.append('')
+        if 'spec_idx' in sp:
+            spec_idxes.append(sp['spec_idx'])
+        else:
+            spec_idxes.append(-1)
 
         # run post correction
         pep, pos, positional_score = post_correction(rst, ms, c)
@@ -184,52 +238,55 @@ def denovo(model, spectra, batch_size):
         positional_scores.append(positional_score)
         scores.append(np.prod(positional_score))
 
-    ppm_diffs = asnp32([ppm(sp['mass'], m1(pp, c)) for sp, pp, c in zip(spectra, predict_peps, charges)])
-    return peps, predict_peps, scores, positional_scores, ppm_diffs, spectra
+    ppm_diffs = asnp32([
+        ppm(sp['mass'], m1(pp, c)) for sp, pp, c in 
+        zip(spectra, predict_peps, charges)
+    ])
+    return (
+        peps, predict_peps, scores, 
+        positional_scores, ppm_diffs, 
+        raw_names, spec_idxes
+    )
 
+def load_model(model_file):
+    tf.keras.backend.clear_session()
+    model = k.models.load_model(
+        model_file, compile=0,
+        custom_objects={"InstanceNormalization":InstanceNormalization}
+    )
+    return model
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--input', type=str,
-                    help='input file path', default='example.mgf')
-parser.add_argument('--output', type=str,
-                    help='output file path', default='example.tsv')
-parser.add_argument('--model', type=str,
-                    help='Pretained model path', default='model.h5')
-parser.add_argument('--loop_size', type=int,
-                    help='number of spectra in memory', default=10000)
-parser.add_argument('--default_charge', type=int,
-                    help='default charge for spectra without charges, -1 means disabled', default=-1)
-parser.add_argument('--batch_size', type=int,
-                    help='number of spectra per step', default=128)
+def predict_spectra(model, spectra, batch_size=128):
+    (
+        peps, predict_peps, 
+        scores, positional_scores, 
+        ppm_diffs, raw_names, spec_idxes,
+    ) = denovo(model, spectra, batch_size)
 
-args = parser.parse_args()
+    return pd.DataFrame(dict(
+        raw_name=raw_names, 
+        spec_idx=spec_idxes,
+        sequence=peps,
+        predicted_sequence=predict_peps,
+        score=scores,
+        positional_scores=positional_scores,
+        ppm_diff=ppm_diffs,
+    ))
 
-print('Loading model....')
-tf.keras.backend.clear_session()
-model = k.models.load_model(args.model, compile=0)
-print(model.summary())
+def read_mgf_spectra(mgf_file):
+    print(f"Loading {mgf_file} ...")
+    input_stream = mgf.read(
+        open(mgf_file, "r"), convert_arrays=1, 
+        read_charges=False, dtype='float32', 
+        use_index=False
+    )
+    return read_mgf(
+        input_stream, 
+        count=-1, 
+        default_charge=-1
+    )
 
-print("Starting reading mgf of:", args.input)
-input_stream = mgf.read(open(args.input, "r"), convert_arrays=1, read_charges=False,
-                    dtype='float32', use_index=False)
+def read_alpharaw_spectra(spec_df, peak_df):
+    input_stream = SpecDFStream(spec_df, peak_df)
+    return read_spec_df(input_stream)
 
-f = open(args.output, 'w+')
-f.writelines(['TITLE\tDENOVO\tScore\tPPM Difference\tPositional Score\n'])
-
-# sequencing loop
-i = 0
-while True:
-    spectra = read_mgf(input_stream, count=args.loop_size, default_charge=args.default_charge)
-    if len(spectra) <= 0:
-        break
-
-    print("De novo spectra from", i, "to", i + len(spectra))
-    i += len(spectra)
-
-    peps, ppeps, scores, pscores, ppms, _ = denovo(model, spectra, args.batch_size)
-
-    f.writelines("\t".join([p, pp, f4(s), str(ppm), str(list(pscore)[:len(pp)])]) + "\n"
-                 for p, pp, s, pscore, ppm in zip(peps, ppeps, scores, pscores, ppms))
-
-f.close()
-print('Finished,', i, 'spectra in total')
