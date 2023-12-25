@@ -26,11 +26,11 @@ class SpecDFStream:
         return self
     
     def __next__(self):
-        if self.spec_ptr >= len*self.spec_df:
+        if self.spec_ptr >= len(self.spec_df):
             raise StopIteration
         ret_series = self.spec_df.iloc[self.spec_ptr]
-        start = ret_series["peak_start_idx"]
-        stop = ret_series["peak_stop_idx"]
+        start = int(ret_series["peak_start_idx"])
+        stop = int(ret_series["peak_stop_idx"])
         self.spec_ptr += 1
         peak_masses = self.peak_df.mz.values[start:stop]
         peak_intens = self.peak_df.intensity.values[start:stop]
@@ -38,6 +38,7 @@ class SpecDFStream:
 
 def read_spec_df(
     data:SpecDFStream, 
+    read_batch_size=1024,
 ):
     spectra = []
 
@@ -47,16 +48,27 @@ def read_spec_df(
         else:
             pep = ''
 
+        if 'nce' in spec_series.index:
+            nce = spec_series.nce / 100.0
+        else:
+            nce = 0
+        if 'raw_name' in spec_series.index:
+            raw_name = spec_series.raw_name
+        else:
+            raw_name = ''
+
         spectra.append({
             'pep': pep, 'type': 3, 'nmod': 0, 
-            'charge': spec_series.charge, 
+            'charge': int(spec_series.charge), 
             'mod': np.zeros(len(pep), 'int32'),
             'mass': spec_series.precursor_mz, 
-            'nce': spec_series.nce, 
-            'raw_name': spec_series.raw_name,
-            'spec_idx': spec_series.spec_idx, 
+            'nce': nce, 
+            'raw_name': raw_name,
+            'spec_idx': int(spec_series.spec_idx), 
             'mz': peak_masses, 'it': peak_intens
         })
+        if len(spectra) >= read_batch_size:
+            break
 
     return spectra
 
@@ -245,7 +257,7 @@ def denovo(model, spectra, batch_size):
     return (
         peps, predict_peps, scores, 
         positional_scores, ppm_diffs, 
-        raw_names, spec_idxes
+        raw_names, spec_idxes, charges
     )
 
 def load_model(model_file):
@@ -258,14 +270,15 @@ def load_model(model_file):
 
 def predict_spectra(model, spectra, batch_size=128):
     (
-        peps, predict_peps, 
-        scores, positional_scores, 
-        ppm_diffs, raw_names, spec_idxes,
+        peps, predict_peps, scores, 
+        positional_scores,  ppm_diffs, 
+        raw_names, spec_idxes, charges,
     ) = denovo(model, spectra, batch_size)
 
     return pd.DataFrame(dict(
         raw_name=raw_names, 
         spec_idx=spec_idxes,
+        charge=charges,
         sequence=peps,
         predicted_sequence=predict_peps,
         score=scores,
