@@ -55,6 +55,10 @@ def read_spec_df(
             raw_name = spec_series.raw_name
         else:
             raw_name = ''
+        if 'query_id' in spec_series.index:
+            query_id = spec_series.query_id
+        else:
+            query_id = 0
 
         spectra.append({
             'pep': pep, 'type': 3, 'nmod': 0, 
@@ -64,6 +68,7 @@ def read_spec_df(
             'nce': nce, 
             'raw_name': raw_name,
             'spec_idx': int(spec_series.spec_idx), 
+            'query_id': query_id,
             'mz': peak_masses, 'it': peak_intens
         })
 
