@@ -1,0 +1,7 @@
+tensorflow-gpu==2.10.0
+numba
+pandas
+tensorflow-addons
+pyteomics
+alphabase
+alpharaw
