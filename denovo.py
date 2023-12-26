@@ -247,13 +247,18 @@ def denovo(model, spectra, batch_size):
         positional_scores.append(positional_score)
         scores.append(np.prod(positional_score))
 
+    Da_diffs = asnp32([
+        sp['mass']-m1(pp, c) for sp, pp, c in 
+        zip(spectra, predict_peps, charges)
+    ])
     ppm_diffs = asnp32([
         ppm(sp['mass'], m1(pp, c)) for sp, pp, c in 
         zip(spectra, predict_peps, charges)
     ])
     return (
         peps, predict_peps, scores, 
-        positional_scores, ppm_diffs, 
+        positional_scores, 
+        ppm_diffs, Da_diffs,
         raw_names, spec_idxes, charges
     )
 
@@ -268,7 +273,7 @@ def load_model(model_file):
 def predict_spectra(model, spectra, batch_size=128):
     (
         peps, predict_peps, scores, 
-        positional_scores,  ppm_diffs, 
+        positional_scores,  ppm_diffs, Da_diffs,
         raw_names, spec_idxes, charges,
     ) = denovo(model, spectra, batch_size)
 
@@ -281,6 +286,7 @@ def predict_spectra(model, spectra, batch_size=128):
         score=scores,
         positional_scores=positional_scores,
         ppm_diff=ppm_diffs,
+        Da_diff=Da_diffs,
     ))
 
 def read_mgf_spectra(mgf_file):
