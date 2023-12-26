@@ -38,7 +38,6 @@ class SpecDFStream:
 
 def read_spec_df(
     data:SpecDFStream, 
-    read_batch_size=1024,
 ):
     spectra = []
 
@@ -67,8 +66,6 @@ def read_spec_df(
             'spec_idx': int(spec_series.spec_idx), 
             'mz': peak_masses, 'it': peak_intens
         })
-        if len(spectra) >= read_batch_size:
-            break
 
     return spectra
 
